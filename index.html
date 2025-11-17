@@ -92,6 +92,39 @@
       padding: 4px 0;
     }
 
+    .story-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 8px;
+    }
+
+    .story-card {
+      background: #0d111c;
+      border: 1px solid #1f2430;
+      border-radius: 8px;
+      padding: 8px 10px;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    }
+
+    .story-card h4 {
+      margin: 0;
+      font-size: 0.95rem;
+      color: #f8d57f;
+    }
+
+    .story-card p {
+      margin: 4px 0 0;
+      font-size: 0.9rem;
+      color: #c7d2e5;
+    }
+
+    .story-time {
+      font-size: 0.8rem;
+      color: #8ea0c7;
+    }
+
     #canvas-wrapper {
       position: relative;
       background: #07090f;
@@ -143,6 +176,11 @@
       <div class="stat-line"><span>Energy</span><span id="hero-energy">-</span></div>
       <div class="stat-line"><span>Goal</span><span id="hero-goal">-</span></div>
     </div>
+
+    <div class="panel">
+      <h3>Story Events</h3>
+      <ul class="story-list" id="story-feed"></ul>
+    </div>
   </aside>
 
   <main id="canvas-wrapper">
@@ -159,6 +197,7 @@
 
     const canvas = document.getElementById('world-canvas');
     const statusEl = document.getElementById('status');
+    const storyEl = document.getElementById('story-feed');
     const world = createWorld({ width: 64, height: 36 });
     const simulation = new Simulation(world, canvas);
     const renderer = setupRenderer(canvas, world, simulation);
@@ -181,9 +220,27 @@
       }
     }
 
+    function renderStoryLog(entries = simulation.getStoryLog()) {
+      storyEl.innerHTML = '';
+      entries.forEach((event) => {
+        const card = document.createElement('li');
+        card.className = 'story-card';
+        card.innerHTML = `
+          <div class="story-time">${event.timestamp}</div>
+          <h4>${event.title}</h4>
+          <p>${event.description}</p>
+        `;
+        storyEl.appendChild(card);
+      });
+    }
+
     simulation.onStatus((text) => {
       statusEl.textContent = text;
       updateHud();
+    });
+
+    simulation.onStory((entries) => {
+      renderStoryLog(entries);
     });
 
     renderer.onSelectEntity((entity) => {
@@ -193,6 +250,7 @@
 
     simulation.start();
     updateHud();
+    renderStoryLog();
   </script>
 </body>
 </html>

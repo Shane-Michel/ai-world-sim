@@ -1,9 +1,7 @@
+import { randomChoice } from './utils.js';
+
 const seasons = ['Spring', 'Summer', 'Autumn', 'Winter'];
 const patterns = ['Clear', 'Rain', 'Storm', 'Fog', 'Windy'];
-
-function randomChoice(list) {
-  return list[Math.floor(Math.random() * list.length)];
-}
 
 function createTile(x, y) {
   const biomes = ['plains', 'forest', 'hills', 'coast'];
