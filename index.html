@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI World Simulation</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: "Inter", system-ui, -apple-system, sans-serif;
+      background: #0f1117;
+      color: #e5e9f0;
+    }
+
+    body {
+      margin: 0;
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      min-height: 100vh;
+    }
+
+    header {
+      padding: 16px;
+      border-bottom: 1px solid #1f2430;
+      background: #111421;
+    }
+
+    #sidebar {
+      border-right: 1px solid #1f2430;
+      background: linear-gradient(180deg, #111421 0%, #0d101a 100%);
+      padding: 16px;
+      box-sizing: border-box;
+    }
+
+    #sidebar h2 {
+      margin: 0 0 12px;
+      font-size: 1.1rem;
+      letter-spacing: 0.02em;
+    }
+
+    .panel {
+      background: #141927;
+      border: 1px solid #1f2430;
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 12px;
+      box-shadow: 0 12px 24px rgba(0, 0, 0, 0.3);
+    }
+
+    .panel h3 {
+      margin: 0 0 8px;
+      font-size: 0.95rem;
+      color: #9dc6ff;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    button {
+      appearance: none;
+      background: linear-gradient(135deg, #325cff 0%, #43b0ff 100%);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      cursor: pointer;
+      transition: transform 120ms ease, box-shadow 120ms ease;
+      box-shadow: 0 10px 20px rgba(55, 125, 255, 0.35);
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 12px 22px rgba(55, 125, 255, 0.45);
+    }
+
+    button:active {
+      transform: translateY(0);
+      box-shadow: 0 6px 12px rgba(55, 125, 255, 0.3);
+    }
+
+    .mode-buttons {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    }
+
+    .stat-line {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.95rem;
+      padding: 4px 0;
+    }
+
+    #canvas-wrapper {
+      position: relative;
+      background: #07090f;
+    }
+
+    #world-canvas {
+      width: 100%;
+      height: calc(100vh - 0px);
+      display: block;
+      background: radial-gradient(circle at 25% 25%, rgba(67, 176, 255, 0.05), transparent 40%),
+        radial-gradient(circle at 75% 75%, rgba(50, 92, 255, 0.05), transparent 40%),
+        #0a0c14;
+    }
+
+    #status {
+      font-size: 0.9rem;
+      color: #bfc8da;
+    }
+  </style>
+</head>
+<body>
+  <aside id="sidebar">
+    <header>
+      <h1>AI World Simulation</h1>
+      <p id="status">Initializing...</p>
+    </header>
+
+    <div class="panel">
+      <h3>Game Modes</h3>
+      <div class="mode-buttons">
+        <button id="god-mode">God Mode</button>
+        <button id="kingdom-mode">Kingdom Mode</button>
+        <button id="rpg-mode">RPG Mode</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>World Snapshot</h3>
+      <div class="stat-line"><span>Weather</span><span id="weather">-</span></div>
+      <div class="stat-line"><span>Cycle</span><span id="cycle">-</span></div>
+      <div class="stat-line"><span>Population</span><span id="population">-</span></div>
+      <div class="stat-line"><span>Kingdoms</span><span id="kingdoms">-</span></div>
+    </div>
+
+    <div class="panel">
+      <h3>Selected Character</h3>
+      <div class="stat-line"><span>Name</span><span id="hero-name">-</span></div>
+      <div class="stat-line"><span>Mood</span><span id="hero-mood">-</span></div>
+      <div class="stat-line"><span>Energy</span><span id="hero-energy">-</span></div>
+      <div class="stat-line"><span>Goal</span><span id="hero-goal">-</span></div>
+    </div>
+  </aside>
+
+  <main id="canvas-wrapper">
+    <canvas id="world-canvas" width="1280" height="720"></canvas>
+  </main>
+
+  <script type="module">
+    import { createWorld } from './engine/world.js';
+    import { Simulation } from './engine/simulation.js';
+    import { setupRenderer } from './render/renderer.js';
+    import { initializeGodMode } from './gameplay/godMode.js';
+    import { initializeKingdomMode } from './gameplay/kingdomMode.js';
+    import { initializeRpgMode } from './gameplay/rpgMode.js';
+
+    const canvas = document.getElementById('world-canvas');
+    const statusEl = document.getElementById('status');
+    const world = createWorld({ width: 64, height: 36 });
+    const simulation = new Simulation(world, canvas);
+    const renderer = setupRenderer(canvas, world, simulation);
+
+    initializeGodMode(world, simulation);
+    initializeKingdomMode(world, simulation);
+    initializeRpgMode(world, simulation);
+
+    function updateHud() {
+      document.getElementById('weather').textContent = `${world.weather.season} / ${world.weather.pattern}`;
+      document.getElementById('cycle').textContent = `${world.time.day}d ${world.time.hour.toFixed(0)}h`;
+      document.getElementById('population').textContent = simulation.population.toString();
+      document.getElementById('kingdoms').textContent = world.kingdoms.length.toString();
+      const hero = simulation.getFocusedEntity();
+      if (hero) {
+        document.getElementById('hero-name').textContent = hero.name;
+        document.getElementById('hero-mood').textContent = hero.mood;
+        document.getElementById('hero-energy').textContent = hero.energy.toFixed(0);
+        document.getElementById('hero-goal').textContent = hero.goal;
+      }
+    }
+
+    simulation.onStatus((text) => {
+      statusEl.textContent = text;
+      updateHud();
+    });
+
+    renderer.onSelectEntity((entity) => {
+      simulation.focusEntity(entity.id);
+      updateHud();
+    });
+
+    simulation.start();
+    updateHud();
+  </script>
+</body>
+</html>
