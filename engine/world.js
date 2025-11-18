@@ -16,6 +16,21 @@ function createTile(x, y) {
   };
 }
 
+function createKingdom(id, name, color, seat) {
+  return {
+    id,
+    name,
+    color,
+    influence: 0,
+    wealth: 0,
+    territory: 1,
+    military: 0,
+    diplomacy: 0,
+    population: 0,
+    seat,
+  };
+}
+
 export function createWorld({ width = 64, height = 36 }) {
   const tiles = [];
   for (let y = 0; y < height; y++) {
@@ -25,6 +40,9 @@ export function createWorld({ width = 64, height = 36 }) {
     }
     tiles.push(row);
   }
+
+  const northernSeat = { x: 2, y: Math.floor(height / 4) };
+  const southernSeat = { x: width - 3, y: Math.floor((height / 4) * 3) };
 
   return {
     width,
@@ -37,18 +55,8 @@ export function createWorld({ width = 64, height = 36 }) {
       temperature: 18,
     },
     kingdoms: [
-      {
-        id: 'aurora',
-        name: 'Aurora Coalition',
-        color: '#6dd5ff',
-        influence: 0.25,
-      },
-      {
-        id: 'ember',
-        name: 'Ember Concord',
-        color: '#ff8c42',
-        influence: 0.2,
-      },
+      createKingdom('aurora', 'Aurora Coalition', '#6dd5ff', northernSeat),
+      createKingdom('ember', 'Ember Concord', '#ff8c42', southernSeat),
     ],
   };
 }
