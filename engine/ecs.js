@@ -18,6 +18,13 @@ export class ECS {
     this.components.get(name).set(entityId, data);
   }
 
+  removeEntity(entityId) {
+    this.entities.delete(entityId);
+    for (const component of this.components.values()) {
+      component.delete(entityId);
+    }
+  }
+
   removeComponent(entityId, name) {
     if (this.components.has(name)) {
       this.components.get(name).delete(entityId);

@@ -27,6 +27,10 @@ function createKingdom(id, name, color, seat) {
     military: 0,
     diplomacy: 0,
     population: 0,
+    stores: {
+      food: 80,
+      water: 80,
+    },
     seat,
   };
 }
