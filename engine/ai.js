@@ -90,6 +90,11 @@ export function updateAI(world, ecs, callbacks = {}) {
         if (tile.resources > 0) {
           tile.resources -= 1;
           Brain.memory.unshift(`Gathered resources at ${Position.x},${Position.y}`);
+          const kingdom = world.kingdoms.find((k) => k.id === Brain.kingdom);
+          if (kingdom) {
+            kingdom.stores.food += 1.5;
+            kingdom.stores.water += 1.2;
+          }
           nudgeKingdom(world, Brain.kingdom, { wealth: 0.5, influence: 0.002 });
           Vitals.energy -= 2;
           Vitals.mood += 1;

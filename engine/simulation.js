@@ -28,6 +28,7 @@ export class Simulation {
     this.statusListeners = [];
     this.storyListeners = [];
     this.storyLog = [];
+    this.nomadStores = new Map();
     this.running = false;
 
     this.#seedWorld();
@@ -40,6 +41,42 @@ export class Simulation {
       kingdom.influence = Math.min(1, kingdom.influence + 0.002);
     }
     this.population += 1;
+  }
+
+  #deregisterCitizen(kingdomId) {
+    const kingdom = this.world.kingdoms.find((k) => k.id === kingdomId);
+    if (kingdom && kingdom.population > 0) {
+      kingdom.population -= 1;
+    }
+    this.population = Math.max(0, this.population - 1);
+  }
+
+  #reapCitizen(id, reason) {
+    const brain = this.ecs.getComponent(id, 'Brain');
+    const identity = this.ecs.getComponent(id, 'Identity');
+    const lineage = this.ecs.getComponent(id, 'Lineage');
+    const name = identity?.name || `Entity-${id}`;
+
+    this.#deregisterCitizen(brain?.kingdom);
+
+    if (lineage?.partnerId) {
+      const partnerLineage = this.ecs.getComponent(lineage.partnerId, 'Lineage');
+      if (partnerLineage?.partnerId === id) {
+        partnerLineage.partnerId = null;
+        this.ecs.addComponent(lineage.partnerId, 'Lineage', partnerLineage);
+      }
+    }
+
+    this.ecs.removeEntity(id);
+    this.statusListeners.forEach((fn) => fn(`${name} has died (${reason}).`));
+
+    if (identity) {
+      const lifeSummary = lineage ? `${lineage.ageDays.toFixed(1)} winters known` : 'life cut short';
+      this.addStoryEvent({
+        title: `${name} passes`,
+        description: `${name} of ${brain?.kingdom || 'no banner'} dies (${reason}); ${lifeSummary}.`,
+      });
+    }
   }
 
   #createCitizenEntity({
@@ -254,9 +291,66 @@ export class Simulation {
   }
 
   #handleNewDay() {
+    this.#applyDailyUpkeep();
     const event = drawStoryEvent(this.world, this.ecs);
     if (event) {
       this.addStoryEvent({ title: event.title, description: event.description });
     }
+  }
+
+  #applyDailyUpkeep() {
+    const citizens = this.ecs.query(['Brain', 'Vitals', 'Lineage', 'Identity', 'Position']);
+    const byKingdom = new Map();
+
+    citizens.forEach((bundle) => {
+      const kingdomId = bundle.Brain.kingdom;
+      if (!byKingdom.has(kingdomId)) byKingdom.set(kingdomId, []);
+      byKingdom.get(kingdomId).push(bundle);
+    });
+
+    const pendingDeaths = [];
+
+    for (const [kingdomId, members] of byKingdom.entries()) {
+      const kingdom = this.world.kingdoms.find((k) => k.id === kingdomId);
+      const stores = kingdom?.stores || this.nomadStores.get(kingdomId) || { food: 25, water: 25 };
+      const needFood = members.length * 1;
+      const needWater = members.length * 1;
+
+      const consumedFood = Math.min(stores.food, needFood);
+      const consumedWater = Math.min(stores.water, needWater);
+      stores.food -= consumedFood;
+      stores.water -= consumedWater;
+
+      if (kingdom) {
+        kingdom.stores = stores;
+      } else {
+        this.nomadStores.set(kingdomId, stores);
+      }
+
+      const shortageRatio = (needFood + needWater - (consumedFood + consumedWater)) / Math.max(1, needFood + needWater);
+
+      members.forEach(({ id, Vitals, Lineage }) => {
+        if (shortageRatio > 0) {
+          Vitals.energy = Math.max(0, Vitals.energy - shortageRatio * 20);
+          Vitals.mood = Math.max(0, Vitals.mood - shortageRatio * 15);
+          if (Math.random() < shortageRatio * 0.35 || Vitals.energy <= 0) {
+            pendingDeaths.push({ id, reason: 'starvation' });
+            return;
+          }
+        }
+
+        const oldAgeThreshold = 75;
+        if (Lineage.ageDays > oldAgeThreshold) {
+          const ageRisk = Math.min(0.8, (Lineage.ageDays - oldAgeThreshold) / 80);
+          if (Math.random() < ageRisk) {
+            pendingDeaths.push({ id, reason: 'old age' });
+          }
+        }
+
+        this.ecs.addComponent(id, 'Vitals', Vitals);
+      });
+    }
+
+    pendingDeaths.forEach(({ id, reason }) => this.#reapCitizen(id, reason));
   }
 }
