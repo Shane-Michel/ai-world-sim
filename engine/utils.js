@@ -5,3 +5,9 @@ export function randomChoice(list) {
 export function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
+
+export function getLifeStage(ageDays) {
+  if (ageDays < 18) return 'child';
+  if (ageDays < 65) return 'adult';
+  return 'elder';
+}

@@ -1,6 +1,12 @@
-import { clamp } from './utils.js';
+import { clamp, getLifeStage } from './utils.js';
 
 const goals = ['wander', 'gather', 'socialize', 'rest', 'explore', 'aid', 'trade', 'court', 'war', 'rally'];
+
+const stageProfiles = {
+  child: { energyCost: 0.75, moodFlex: 0.9, masteryGain: 0.6 },
+  adult: { energyCost: 1, moodFlex: 1, masteryGain: 1 },
+  elder: { energyCost: 0.85, moodFlex: 1.15, masteryGain: 1.2 },
+};
 
 function pickGoal(vitals, identity, weather, lineage, edict, nearKing) {
   if (vitals.energy < 25) return 'rest';
@@ -85,11 +91,11 @@ function applyWeatherMood(weather) {
 }
 
 export function updateAI(world, ecs, callbacks = {}) {
-  const citizens = ecs.query(['Brain', 'Position', 'Vitals', 'Identity', 'Lineage']);
+  const citizens = ecs.query(['Brain', 'Position', 'Vitals', 'Identity', 'Lineage', 'Skills']);
   const moodDelta = applyWeatherMood(world.weather);
 
   for (const bundle of citizens) {
-    const { Brain, Position, Vitals, Identity, Lineage, id } = bundle;
+    const { Brain, Position, Vitals, Identity, Lineage, Skills, id } = bundle;
     const lineage = Lineage || { partnerId: null, offspring: 0, ageDays: 20, fertilityCooldown: 0 };
     const kingdom = world.kingdoms.find((k) => k.id === Brain.kingdom);
     const kingPosition = getKingPosition(world, ecs, Brain.kingdom);
@@ -97,13 +103,34 @@ export function updateAI(world, ecs, callbacks = {}) {
       ? Math.max(Math.abs(kingPosition.x - Position.x), Math.abs(kingPosition.y - Position.y))
       : null;
     const edict = kingdom?.edict || 'prosper';
+    const lifeStage = getLifeStage(lineage.ageDays);
+    Identity.lifeStage = lifeStage;
+    const profile = stageProfiles[lifeStage] || stageProfiles.adult;
 
-    Vitals.mood = clamp(Vitals.mood + moodDelta, 0, 100);
+    const adjustEnergy = (delta) => {
+      Vitals.energy = clamp(Vitals.energy + delta * profile.energyCost, 0, 100);
+    };
+
+    const adjustMood = (delta) => {
+      Vitals.mood = clamp(Vitals.mood + delta * profile.moodFlex, 0, 100);
+    };
+
+    const gainMastery = (amount, specialty) => {
+      if (!Skills) return;
+      const bonus = specialty && specialty === Identity.role ? 1.2 : 1;
+      Skills.mastery = clamp((Skills.mastery || 0) + amount * bonus * profile.masteryGain, 0, 120);
+      if (specialty && !Skills.specialty) Skills.specialty = specialty;
+      ecs.addComponent(id, 'Skills', Skills);
+    };
+
+    const heroEligible = Identity.role === 'wanderer';
+
+    adjustMood(moodDelta);
     lineage.ageDays += 0.05;
     lineage.fertilityCooldown = Math.max(0, lineage.fertilityCooldown - 1);
 
     if (distanceToKing !== null && distanceToKing < 2) {
-      Vitals.mood = clamp(Vitals.mood + 0.1, 0, 100);
+      adjustMood(0.1);
     }
 
     if (Math.random() < 0.02) {
@@ -112,8 +139,8 @@ export function updateAI(world, ecs, callbacks = {}) {
 
     switch (Brain.goal) {
       case 'rest':
-        Vitals.energy = clamp(Vitals.energy + 5, 0, 100);
-        Vitals.mood = clamp(Vitals.mood + 0.5, 0, 100);
+        adjustEnergy(5);
+        adjustMood(0.5);
         break;
       case 'gather': {
         const tile = world.tiles[Position.y][Position.x];
@@ -122,16 +149,18 @@ export function updateAI(world, ecs, callbacks = {}) {
           Brain.memory.unshift(`Gathered resources at ${Position.x},${Position.y}`);
           const kingdom = world.kingdoms.find((k) => k.id === Brain.kingdom);
           if (kingdom) {
-            kingdom.stores.food += 1.5;
-            kingdom.stores.water += 1.2;
+            const efficiency = 1 + (Skills?.mastery || 0) / 120;
+            kingdom.stores.food += 1.5 * efficiency;
+            kingdom.stores.water += 1.2 * efficiency;
           }
           nudgeKingdom(world, Brain.kingdom, { wealth: 0.5, influence: 0.002 });
-          Vitals.energy -= 2;
-          Vitals.mood += 1;
+          adjustEnergy(-2);
+          adjustMood(1);
+          gainMastery(0.8, 'artisan');
         } else {
           Position.x = clampPosition(world, moveToward({ x: tile.x + 1, y: tile.y + 1 }, Position)).x;
           Position.y = clampPosition(world, moveToward({ x: tile.x + 1, y: tile.y + 1 }, Position)).y;
-          Vitals.energy -= 1.5;
+          adjustEnergy(-1.5);
         }
         break;
       }
@@ -144,9 +173,10 @@ export function updateAI(world, ecs, callbacks = {}) {
         Position.x = moved.x;
         Position.y = moved.y;
         Brain.memory.unshift(`Scouted toward ${target.x},${target.y}`);
-        Vitals.energy -= 1.5;
-        Vitals.mood += 0.4;
+        adjustEnergy(-1.5);
+        adjustMood(0.4);
         nudgeKingdom(world, Brain.kingdom, { territory: 0.05, influence: 0.003 });
+        gainMastery(0.6, 'scout');
         break;
       }
       case 'trade': {
@@ -158,10 +188,13 @@ export function updateAI(world, ecs, callbacks = {}) {
           (otherId) => ecs.getComponent(otherId, 'Brain')?.kingdom !== Brain.kingdom,
         );
         const tradeValue = partner ? 1 : 0.5;
-        nudgeKingdom(world, Brain.kingdom, { wealth: tradeValue, diplomacy: 0.05 * tradeValue, influence: 0.01 });
-        Vitals.energy -= 1.2;
-        Vitals.mood += 1.1;
+        const efficiency = 1 + (Skills?.mastery || 0) / 150;
+        const value = tradeValue * efficiency;
+        nudgeKingdom(world, Brain.kingdom, { wealth: value, diplomacy: 0.05 * value, influence: 0.01 * efficiency });
+        adjustEnergy(-1.2);
+        adjustMood(1.1);
         Brain.memory.unshift(partner ? `Traded with ${partner.Identity.name}` : 'Brokered a small trade route');
+        gainMastery(0.9, 'artisan');
         break;
       }
       case 'aid': {
@@ -172,8 +205,9 @@ export function updateAI(world, ecs, callbacks = {}) {
           vitals.energy = clamp(vitals.energy + 1, 0, 100);
           ecs.addComponent(nearby.id, 'Vitals', vitals);
           Brain.memory.unshift(`Tended to ${nearby.Identity.name}`);
-          Vitals.mood = clamp(Vitals.mood + 1, 0, 100);
-          Vitals.energy -= 1.2;
+          adjustMood(1);
+          adjustEnergy(-1.2);
+          gainMastery(0.8, 'mender');
         } else {
           Brain.goal = 'wander';
         }
@@ -187,8 +221,8 @@ export function updateAI(world, ecs, callbacks = {}) {
           ecs.addComponent(partner.id, 'Vitals', partnerVitals);
           Brain.memory.unshift(`Traded tales with ${partner.Identity.name}`);
         }
-        Vitals.mood = clamp(Vitals.mood + 1.5, 0, 100);
-        Vitals.energy -= 1;
+        adjustMood(1.5);
+        adjustEnergy(-1);
         break;
       }
       case 'court': {
@@ -216,7 +250,7 @@ export function updateAI(world, ecs, callbacks = {}) {
           ecs.addComponent(eligible.id, 'Lineage', otherLineage);
           Brain.goal = 'rest';
           Brain.memory.unshift(`Bonded with ${eligible.Identity.name}`);
-          Vitals.mood = clamp(Vitals.mood + 3, 0, 100);
+          adjustMood(3);
         } else if (lineage.partnerId) {
           const partner = ecs.getComponent(lineage.partnerId, 'Position');
           if (partner) {
@@ -236,11 +270,11 @@ export function updateAI(world, ecs, callbacks = {}) {
                 callbacks.spawnChild({ kingdom: Brain.kingdom, x: Position.x, y: Position.y, parents: [id, lineage.partnerId] });
               }
               Brain.memory.unshift(`Shared time with partner`);
-              Vitals.mood = clamp(Vitals.mood + 2, 0, 100);
+              adjustMood(2);
             }
           }
         }
-        Vitals.energy -= 0.8;
+        adjustEnergy(-0.8);
         break;
       }
       case 'war': {
@@ -261,6 +295,7 @@ export function updateAI(world, ecs, callbacks = {}) {
           const rivalBrain = ecs.getComponent(rival.id, 'Brain');
           nudgeKingdom(world, rivalBrain?.kingdom, { military: -0.05, influence: -0.005 });
           Brain.memory.unshift(`Clashed with ${rival.Identity.name}`);
+          gainMastery(0.9, 'guardian');
         } else {
           const nearestEnemy = world.kingdoms.find((k) => k.id !== Brain.kingdom);
           if (nearestEnemy) {
@@ -275,8 +310,8 @@ export function updateAI(world, ecs, callbacks = {}) {
         if (currentTile?.controlledBy !== Brain.kingdom) {
           callbacks.onConquest?.({ x: Position.x, y: Position.y, attacker: Brain.kingdom, defender: currentTile?.controlledBy });
         }
-        Vitals.energy -= 2.2;
-        Vitals.mood = clamp(Vitals.mood - 0.6, 0, 100);
+        adjustEnergy(-2.2);
+        adjustMood(-0.6);
         break;
       }
       case 'rally': {
@@ -285,8 +320,8 @@ export function updateAI(world, ecs, callbacks = {}) {
         Position.x = moved.x;
         Position.y = moved.y;
         Brain.memory.unshift('Answered the king’s summons');
-        Vitals.energy -= 1.1;
-        Vitals.mood = clamp(Vitals.mood + 0.2, 0, 100);
+        adjustEnergy(-1.1);
+        adjustMood(0.2);
         break;
       }
       default:
@@ -298,9 +333,15 @@ export function updateAI(world, ecs, callbacks = {}) {
         const moved = clampPosition(world, moveToward(target, Position));
         Position.x = moved.x;
         Position.y = moved.y;
-        Vitals.energy -= 1;
+        adjustEnergy(-1);
         break;
       }
+    }
+
+    const milestoneActions = ['explore', 'trade', 'aid', 'war'];
+    if (heroEligible && milestoneActions.includes(Brain.goal) && Brain.lastQuestDay !== world.time.day) {
+      callbacks.onHeroMilestone?.({ id, action: Brain.goal, detail: Brain.memory[0] });
+      Brain.lastQuestDay = world.time.day;
     }
 
     Brain.memory = Brain.memory.slice(0, 5);

@@ -38,6 +38,23 @@ function createKingdom(id, name, color, seat) {
   };
 }
 
+function initializeRelationships(kingdoms) {
+  const relationships = new Map();
+  kingdoms.forEach((a) => {
+    if (!relationships.has(a.id)) relationships.set(a.id, new Map());
+    kingdoms.forEach((b) => {
+      if (a.id === b.id) return;
+      const base = 0.1 + Math.random() * 0.1;
+      relationships.get(a.id).set(b.id, {
+        attitude: base,
+        treaty: 'neutral',
+        lastTradeDay: -1,
+      });
+    });
+  });
+  return relationships;
+}
+
 function assignTerritories(world) {
   const nearestSeat = (x, y) => {
     let best = null;
@@ -117,9 +134,12 @@ export function createWorld({ width = 64, height = 36 }) {
       createKingdom('aurora', 'Aurora Coalition', '#6dd5ff', northernSeat),
       createKingdom('ember', 'Ember Concord', '#ff8c42', southernSeat),
     ],
+    relationships: new Map(),
   };
 
   assignTerritories(world);
+
+  world.relationships = initializeRelationships(world.kingdoms);
 
   return world;
 }
