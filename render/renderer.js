@@ -19,6 +19,43 @@ export function setupRenderer(canvas, world, simulation) {
         const color = spriteForBiome(tile.biome, tile.resources);
         ctx.fillStyle = color;
         ctx.fillRect(x * cellWidth, y * cellHeight, cellWidth + 1, cellHeight + 1);
+
+        if (tile.controlledBy) {
+          const banner = world.kingdoms.find((k) => k.id === tile.controlledBy);
+          if (banner) {
+            ctx.fillStyle = `${banner.color}33`;
+            ctx.fillRect(x * cellWidth, y * cellHeight, cellWidth + 1, cellHeight + 1);
+
+            ctx.strokeStyle = `${banner.color}aa`;
+            ctx.lineWidth = 1;
+            ctx.globalAlpha = 0.65;
+            if (!world.tiles[y - 1]?.[x] || world.tiles[y - 1][x].controlledBy !== tile.controlledBy) {
+              ctx.beginPath();
+              ctx.moveTo(x * cellWidth, y * cellHeight);
+              ctx.lineTo((x + 1) * cellWidth, y * cellHeight);
+              ctx.stroke();
+            }
+            if (!world.tiles[y + 1]?.[x] || world.tiles[y + 1][x].controlledBy !== tile.controlledBy) {
+              ctx.beginPath();
+              ctx.moveTo(x * cellWidth, (y + 1) * cellHeight);
+              ctx.lineTo((x + 1) * cellWidth, (y + 1) * cellHeight);
+              ctx.stroke();
+            }
+            if (!world.tiles[y]?.[x - 1] || world.tiles[y][x - 1].controlledBy !== tile.controlledBy) {
+              ctx.beginPath();
+              ctx.moveTo(x * cellWidth, y * cellHeight);
+              ctx.lineTo(x * cellWidth, (y + 1) * cellHeight);
+              ctx.stroke();
+            }
+            if (!world.tiles[y]?.[x + 1] || world.tiles[y][x + 1].controlledBy !== tile.controlledBy) {
+              ctx.beginPath();
+              ctx.moveTo((x + 1) * cellWidth, y * cellHeight);
+              ctx.lineTo((x + 1) * cellWidth, (y + 1) * cellHeight);
+              ctx.stroke();
+            }
+            ctx.globalAlpha = 1;
+          }
+        }
       }
     }
   }
