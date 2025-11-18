@@ -2,6 +2,7 @@ import { ECS } from './ecs.js';
 import { advanceWorld, claimTile } from './world.js';
 import { updateAI } from './ai.js';
 import { drawStoryEvent } from './storyEvents.js';
+import { clamp, getLifeStage } from './utils.js';
 
 function createCitizen(id, x, y, kingdom) {
   const names = ['Ari', 'Caspian', 'Mira', 'Lena', 'Jaro', 'Kade'];
@@ -29,9 +30,44 @@ export class Simulation {
     this.storyListeners = [];
     this.storyLog = [];
     this.nomadStores = new Map();
+    this.objectiveListeners = [];
+    this.objectives = this.#createObjectives();
+    this.godMoodStreak = 0;
+    this.heroMilestones = 0;
+    this.lastAverageMood = 0;
+    this.lastFestivalSeason = new Map();
     this.running = false;
 
     this.#seedWorld();
+    this.#emitObjectives();
+  }
+
+  #addSkills(entityId, role, seed = 10) {
+    const mastery = seed + Math.random() * 10;
+    this.ecs.addComponent(entityId, 'Skills', { mastery, specialty: role });
+  }
+
+  #createObjectives() {
+    return {
+      god: {
+        description: 'Maintain average mood above 65 for three consecutive days.',
+        progress: 0,
+        target: 3,
+        completed: false,
+      },
+      kingdom: {
+        description: 'Seize six contested tiles from rival banners.',
+        progress: 0,
+        target: 6,
+        completed: false,
+      },
+      rpg: {
+        description: 'Guide heroes to accomplish four notable milestones.',
+        progress: 0,
+        target: 4,
+        completed: false,
+      },
+    };
   }
 
   #registerCitizen(kingdomId) {
@@ -67,6 +103,7 @@ export class Simulation {
       ageDays: 60,
       fertilityCooldown: 0,
     });
+    this.#addSkills(entityId, 'king', 22);
     kingdom.kingId = entityId;
     this.#registerCitizen(kingdom.id);
     return entityId;
@@ -84,6 +121,7 @@ export class Simulation {
     const brain = this.ecs.getComponent(id, 'Brain');
     const identity = this.ecs.getComponent(id, 'Identity');
     const lineage = this.ecs.getComponent(id, 'Lineage');
+    const skills = this.ecs.getComponent(id, 'Skills');
     const name = identity?.name || `Entity-${id}`;
 
     this.#deregisterCitizen(brain?.kingdom);
@@ -105,6 +143,19 @@ export class Simulation {
         title: `${name} passes`,
         description: `${name} of ${brain?.kingdom || 'no banner'} dies (${reason}); ${lifeSummary}.`,
       });
+      const stage = lineage ? getLifeStage(lineage.ageDays) : 'adult';
+      if (stage === 'elder' && brain?.kingdom) {
+        const kingdom = this.world.kingdoms.find((k) => k.id === brain.kingdom);
+        if (kingdom) {
+          const legacy = Math.max(1, (skills?.mastery || 6) * 0.15);
+          kingdom.wealth += legacy;
+          this.#boostMorale(kingdom.id, 1.5);
+          this.addStoryEvent({
+            title: 'Inheritance shared',
+            description: `${name} leaves a legacy to ${kingdom.name}, bolstering coffers and hearts.`,
+          });
+        }
+      }
     }
   }
 
@@ -135,6 +186,7 @@ export class Simulation {
       ageDays: lineage?.ageDays ?? Math.floor(Math.random() * 30) + 18,
       fertilityCooldown: lineage?.fertilityCooldown ?? 0,
     });
+    this.#addSkills(entityId, role, 8);
     this.#registerCitizen(kingdom);
     return entityId;
   }
@@ -158,6 +210,7 @@ export class Simulation {
     });
     this.ecs.addComponent(id, 'Identity', { name, mood: 75, role, temperament, rank: 'subject' });
     this.ecs.addComponent(id, 'Lineage', { partnerId: null, offspring: 0, ageDays: 0, fertilityCooldown: 200 });
+    this.#addSkills(id, role, 4);
 
     this.#registerCitizen(kingdom);
     this.statusListeners.forEach((fn) => fn(`${name} joins the ${kingdom} banner.`));
@@ -206,6 +259,7 @@ export class Simulation {
           ageDays: Math.floor(Math.random() * 20) + 18,
           fertilityCooldown: 0,
         });
+        this.#addSkills(entityId, role, 6);
         this.#registerCitizen(kingdom.id);
         if (i === 0 && kingdom.id === 'aurora') this.focusedEntity = citizen;
       }
@@ -253,6 +307,7 @@ export class Simulation {
     updateAI(this.world, this.ecs, {
       spawnChild: (baby) => this.#spawnChild(baby),
       onConquest: (payload) => this.#handleConquest(payload),
+      onHeroMilestone: (payload) => this.#handleHeroMilestone(payload),
     });
 
     this.statusListeners.forEach((fn) => fn(`Day ${this.world.time.day} • Temp ${this.world.weather.temperature.toFixed(1)}°C`));
@@ -266,8 +321,16 @@ export class Simulation {
     this.storyListeners.push(handler);
   }
 
+  onObjectives(handler) {
+    this.objectiveListeners.push(handler);
+  }
+
   getStoryLog() {
     return [...this.storyLog];
+  }
+
+  getObjectives() {
+    return JSON.parse(JSON.stringify(this.objectives));
   }
 
   getFocusedEntity() {
@@ -313,6 +376,7 @@ export class Simulation {
     this.ecs.addComponent(entityId, 'Brain', { goal: 'wander', memory: ['New adventurer'], kingdom: 'independent' });
     this.ecs.addComponent(entityId, 'Identity', { name, mood: 80, role: 'wanderer', temperament: 'curious' });
     this.ecs.addComponent(entityId, 'Lineage', { partnerId: null, offspring: 0, ageDays: 24, fertilityCooldown: 0 });
+    this.#addSkills(entityId, 'wanderer', 12);
     this.focusEntity(entityId);
     this.population += 1;
     this.statusListeners.forEach((fn) => fn(`${name} enters the world.`));
@@ -320,6 +384,19 @@ export class Simulation {
       title: 'A new hero rises',
       description: `${name} steps onto the map, ready to chase legends without a kingdom banner.`,
     });
+  }
+
+  #emitObjectives() {
+    const snapshot = this.getObjectives();
+    this.objectiveListeners.forEach((fn) => fn(snapshot));
+  }
+
+  #updateObjective(key, delta = 1) {
+    const objective = this.objectives[key];
+    if (!objective || objective.completed) return;
+    objective.progress = Math.min(objective.target, objective.progress + delta);
+    if (objective.progress >= objective.target) objective.completed = true;
+    this.#emitObjectives();
   }
 
   addStoryEvent(event) {
@@ -332,6 +409,9 @@ export class Simulation {
   #handleNewDay() {
     this.#updateKingdomEdicts();
     this.#applyDailyUpkeep();
+    this.#applySeasonalDynamics();
+    this.#updateDiplomacyAndTrade();
+    this.#evaluateObjectives();
     const event = drawStoryEvent(this.world, this.ecs);
     if (event) {
       this.addStoryEvent({ title: event.title, description: event.description });
@@ -347,6 +427,21 @@ export class Simulation {
     this.addStoryEvent({
       title: 'Border shifts',
       description: `${attackerName} seize ${x},${y} from ${defenderName}.`,
+    });
+
+    if (defender) {
+      this.#updateObjective('kingdom', 1);
+    }
+  }
+
+  #handleHeroMilestone({ id, action, detail }) {
+    const identity = this.ecs.getComponent(id, 'Identity');
+    const heroName = identity?.name || 'Hero';
+    this.heroMilestones += 1;
+    this.#updateObjective('rpg', 1);
+    this.addStoryEvent({
+      title: 'Heroic deed',
+      description: `${heroName} completes a ${action} quest${detail ? ` — ${detail}` : ''}.`,
     });
   }
 
@@ -377,9 +472,164 @@ export class Simulation {
     });
   }
 
+  #applySeasonalDynamics() {
+    const { season } = this.world.weather;
+
+    if (season === 'Winter' && Math.random() < 0.45) {
+      this.world.kingdoms.forEach((kingdom) => {
+        kingdom.stores.food = Math.max(0, kingdom.stores.food - 6);
+        kingdom.stores.water = Math.max(0, kingdom.stores.water - 4);
+      });
+      this.ecs.query(['Vitals']).forEach(({ id, Vitals }) => {
+        Vitals.energy = Math.max(0, Vitals.energy - 4);
+        Vitals.mood = Math.max(0, Vitals.mood - 2);
+        this.ecs.addComponent(id, 'Vitals', Vitals);
+      });
+      this.addStoryEvent({ title: 'Winter blizzard', description: 'Blinding snowstorms drain supplies and sap the people’s strength.' });
+    }
+
+    if (season === 'Spring' && Math.random() < 0.5) {
+      for (let i = 0; i < 5; i++) {
+        const y = Math.floor(Math.random() * this.world.height);
+        const x = Math.floor(Math.random() * this.world.width);
+        this.world.tiles[y][x].resources += 1;
+      }
+      this.ecs.query(['Lineage']).forEach(({ id, Lineage }) => {
+        Lineage.fertilityCooldown = Math.max(0, Lineage.fertilityCooldown - 10);
+        this.ecs.addComponent(id, 'Lineage', Lineage);
+      });
+      this.addStoryEvent({ title: 'Spring growth', description: 'Fresh shoots refill the wilds and families feel new momentum.' });
+    }
+
+    const hosts = [];
+    this.world.kingdoms.forEach((kingdom) => {
+      const lastSeason = this.lastFestivalSeason.get(kingdom.id);
+      if (lastSeason === season) return;
+      if (kingdom.stores.food < 30 || kingdom.stores.water < 30) return;
+      if (Math.random() < 0.35) {
+        kingdom.stores.food = Math.max(0, kingdom.stores.food - 5);
+        kingdom.stores.water = Math.max(0, kingdom.stores.water - 3);
+        kingdom.diplomacy += 0.4;
+        kingdom.influence = Math.min(1, kingdom.influence + 0.03);
+        this.lastFestivalSeason.set(kingdom.id, season);
+        hosts.push(kingdom.name);
+        this.#boostMorale(kingdom.id, 3.5);
+      }
+    });
+
+    if (hosts.length > 0) {
+      this.addStoryEvent({
+        title: 'Seasonal festivals',
+        description: `${hosts.join(' & ')} host lantern nights that raise spirits and diplomatic clout.`,
+      });
+    }
+  }
+
+  #updateDiplomacyAndTrade() {
+    const processed = new Set();
+    const day = this.world.time.day;
+    this.world.kingdoms.forEach((kingdom) => {
+      const relations = this.world.relationships.get(kingdom.id);
+      if (!relations) return;
+
+      for (const [otherId, relation] of relations.entries()) {
+        const key = [kingdom.id, otherId].sort().join('-');
+        if (processed.has(key)) continue;
+        const other = this.world.kingdoms.find((k) => k.id === otherId);
+        if (!other) continue;
+        processed.add(key);
+
+        const seatDistance = Math.hypot(kingdom.seat.x - other.seat.x, kingdom.seat.y - other.seat.y);
+        const attitudeDrift = (kingdom.diplomacy - other.diplomacy) * 0.01 - (kingdom.military - other.military) * 0.005 - seatDistance * 0.001;
+        relation.attitude = clamp(relation.attitude + attitudeDrift, -1, 1);
+
+        let treaty = 'neutral';
+        if (relation.attitude > 0.35) {
+          treaty = 'alliance';
+        } else if (relation.attitude < -0.3) {
+          treaty = 'embargo';
+        } else if (kingdom.wealth > other.wealth * 1.2 && relation.attitude > 0.1) {
+          treaty = 'tribute';
+        }
+        relation.treaty = treaty;
+
+        const reverse = this.world.relationships.get(otherId)?.get(kingdom.id);
+        if (reverse) {
+          reverse.attitude = relation.attitude;
+          reverse.treaty = treaty;
+        }
+
+        const canTrade = treaty !== 'embargo' && relation.lastTradeDay !== day && Math.random() < 0.4;
+        if (canTrade) {
+          const foodFlow = Math.max(-3, Math.min(3, Math.round((kingdom.stores.food - other.stores.food) / 12)));
+          const waterFlow = Math.max(-3, Math.min(3, Math.round((kingdom.stores.water - other.stores.water) / 12)));
+          if (foodFlow > 0) {
+            const amount = Math.min(foodFlow, kingdom.stores.food);
+            kingdom.stores.food -= amount;
+            other.stores.food += amount;
+          } else if (foodFlow < 0) {
+            const amount = Math.min(Math.abs(foodFlow), other.stores.food);
+            other.stores.food -= amount;
+            kingdom.stores.food += amount;
+          }
+
+          if (waterFlow > 0) {
+            const amount = Math.min(waterFlow, kingdom.stores.water);
+            kingdom.stores.water -= amount;
+            other.stores.water += amount;
+          } else if (waterFlow < 0) {
+            const amount = Math.min(Math.abs(waterFlow), other.stores.water);
+            other.stores.water -= amount;
+            kingdom.stores.water += amount;
+          }
+          relation.attitude = clamp(relation.attitude + 0.08, -1, 1);
+          kingdom.diplomacy += 0.1;
+          other.diplomacy += 0.08;
+          relation.lastTradeDay = day;
+          if (reverse) reverse.lastTradeDay = day;
+          this.addStoryEvent({
+            title: 'Trade caravan',
+            description: `${kingdom.name} caravans exchange supplies with ${other.name}, boosting ties.`,
+          });
+        }
+      }
+    });
+  }
+
+  #evaluateObjectives() {
+    let changed = false;
+    const godObjective = this.objectives.god;
+    if (godObjective && !godObjective.completed) {
+      const previous = godObjective.progress;
+      if (this.lastAverageMood >= 65) {
+        this.godMoodStreak += 1;
+        godObjective.progress = Math.min(godObjective.target, this.godMoodStreak);
+        if (godObjective.progress >= godObjective.target) godObjective.completed = true;
+      } else {
+        this.godMoodStreak = 0;
+        godObjective.progress = 0;
+      }
+      changed = changed || previous !== godObjective.progress || godObjective.completed;
+    }
+
+    if (changed) {
+      this.#emitObjectives();
+    }
+  }
+
+  #boostMorale(kingdomId, amount) {
+    this.ecs.query(['Brain', 'Vitals']).forEach(({ id, Brain, Vitals }) => {
+      if (Brain.kingdom !== kingdomId) return;
+      Vitals.mood = clamp(Vitals.mood + amount, 0, 100);
+      this.ecs.addComponent(id, 'Vitals', Vitals);
+    });
+  }
+
   #applyDailyUpkeep() {
     const citizens = this.ecs.query(['Brain', 'Vitals', 'Lineage', 'Identity', 'Position']);
     const byKingdom = new Map();
+    let totalMood = 0;
+    let moodCount = 0;
 
     citizens.forEach((bundle) => {
       const kingdomId = bundle.Brain.kingdom;
@@ -408,7 +658,7 @@ export class Simulation {
 
       const shortageRatio = (needFood + needWater - (consumedFood + consumedWater)) / Math.max(1, needFood + needWater);
 
-      members.forEach(({ id, Vitals, Lineage }) => {
+      members.forEach(({ id, Vitals, Lineage, Identity }) => {
         if (shortageRatio > 0) {
           Vitals.energy = Math.max(0, Vitals.energy - shortageRatio * 20);
           Vitals.mood = Math.max(0, Vitals.mood - shortageRatio * 15);
@@ -425,11 +675,17 @@ export class Simulation {
             pendingDeaths.push({ id, reason: 'old age' });
           }
         }
-
+        const stage = getLifeStage(Lineage.ageDays);
+        if (Identity.lifeStage !== stage) {
+          this.ecs.addComponent(id, 'Identity', { ...Identity, lifeStage: stage });
+        }
+        totalMood += Vitals.mood;
+        moodCount += 1;
         this.ecs.addComponent(id, 'Vitals', Vitals);
       });
     }
 
     pendingDeaths.forEach(({ id, reason }) => this.#reapCitizen(id, reason));
+    this.lastAverageMood = moodCount > 0 ? totalMood / moodCount : 0;
   }
 }

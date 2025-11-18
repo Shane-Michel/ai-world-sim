@@ -170,6 +170,11 @@
     </div>
 
     <div class="panel">
+      <h3>Mode Objectives</h3>
+      <ul class="story-list" id="objective-list"></ul>
+    </div>
+
+    <div class="panel">
       <h3>Selected Character</h3>
       <div class="stat-line"><span>Name</span><span id="hero-name">-</span></div>
       <div class="stat-line"><span>Mood</span><span id="hero-mood">-</span></div>
@@ -198,6 +203,7 @@
     const canvas = document.getElementById('world-canvas');
     const statusEl = document.getElementById('status');
     const storyEl = document.getElementById('story-feed');
+    const objectiveEl = document.getElementById('objective-list');
     const world = createWorld({ width: 64, height: 36 });
     const simulation = new Simulation(world, canvas);
     const renderer = setupRenderer(canvas, world, simulation);
@@ -234,6 +240,20 @@
       });
     }
 
+    function renderObjectives(objectives = simulation.getObjectives()) {
+      objectiveEl.innerHTML = '';
+      Object.entries(objectives).forEach(([key, objective]) => {
+        const card = document.createElement('li');
+        card.className = 'story-card';
+        card.innerHTML = `
+          <div class="story-time">${key.toUpperCase()}</div>
+          <h4>${objective.description}</h4>
+          <p>Progress: ${objective.progress}/${objective.target} ${objective.completed ? '• Completed' : ''}</p>
+        `;
+        objectiveEl.appendChild(card);
+      });
+    }
+
     simulation.onStatus((text) => {
       statusEl.textContent = text;
       updateHud();
@@ -241,6 +261,10 @@
 
     simulation.onStory((entries) => {
       renderStoryLog(entries);
+    });
+
+    simulation.onObjectives((entries) => {
+      renderObjectives(entries);
     });
 
     renderer.onSelectEntity((entity) => {
@@ -251,6 +275,7 @@
     simulation.start();
     updateHud();
     renderStoryLog();
+    renderObjectives();
   </script>
 </body>
 </html>
