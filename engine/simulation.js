@@ -1,5 +1,5 @@
 import { ECS } from './ecs.js';
-import { advanceWorld } from './world.js';
+import { advanceWorld, claimTile } from './world.js';
 import { updateAI } from './ai.js';
 import { drawStoryEvent } from './storyEvents.js';
 
@@ -41,6 +41,35 @@ export class Simulation {
       kingdom.influence = Math.min(1, kingdom.influence + 0.002);
     }
     this.population += 1;
+  }
+
+  #spawnKing(kingdom) {
+    const entityId = this.ecs.createEntity();
+    const { x, y } = kingdom.seat;
+    this.ecs.addComponent(entityId, 'Position', { x, y });
+    this.ecs.addComponent(entityId, 'Vitals', { energy: 95, mood: 85 });
+    this.ecs.addComponent(entityId, 'Brain', {
+      goal: 'wander',
+      memory: [`Crowned ruler of ${kingdom.name}`],
+      kingdom: kingdom.id,
+      commander: null,
+    });
+    this.ecs.addComponent(entityId, 'Identity', {
+      name: `${kingdom.name.split(' ')[0]} King`,
+      mood: 85,
+      role: 'king',
+      temperament: 'steady',
+      rank: 'king',
+    });
+    this.ecs.addComponent(entityId, 'Lineage', {
+      partnerId: null,
+      offspring: 0,
+      ageDays: 60,
+      fertilityCooldown: 0,
+    });
+    kingdom.kingId = entityId;
+    this.#registerCitizen(kingdom.id);
+    return entityId;
   }
 
   #deregisterCitizen(kingdomId) {
@@ -92,12 +121,14 @@ export class Simulation {
     const entityId = this.ecs.createEntity();
     this.ecs.addComponent(entityId, 'Position', { x, y });
     this.ecs.addComponent(entityId, 'Vitals', { energy: 80, mood: 70 });
+    const commander = this.world.kingdoms.find((k) => k.id === kingdom)?.kingId ?? null;
     this.ecs.addComponent(entityId, 'Brain', {
       goal: 'wander',
       memory: [memory ?? `Spawned near ${kingdom}`],
       kingdom,
+      commander,
     });
-    this.ecs.addComponent(entityId, 'Identity', { name, mood: 70, role, temperament });
+    this.ecs.addComponent(entityId, 'Identity', { name, mood: 70, role, temperament, rank: 'subject' });
     this.ecs.addComponent(entityId, 'Lineage', {
       partnerId: lineage?.partnerId ?? null,
       offspring: lineage?.offspring ?? 0,
@@ -118,12 +149,14 @@ export class Simulation {
 
     this.ecs.addComponent(id, 'Position', { x: safeX, y: safeY });
     this.ecs.addComponent(id, 'Vitals', { energy: 90, mood: 75 });
+    const commander = this.world.kingdoms.find((k) => k.id === kingdom)?.kingId ?? null;
     this.ecs.addComponent(id, 'Brain', {
       goal: 'rest',
       memory: [`Born to ${parents.join(' & ')}`],
       kingdom,
+      commander,
     });
-    this.ecs.addComponent(id, 'Identity', { name, mood: 75, role, temperament });
+    this.ecs.addComponent(id, 'Identity', { name, mood: 75, role, temperament, rank: 'subject' });
     this.ecs.addComponent(id, 'Lineage', { partnerId: null, offspring: 0, ageDays: 0, fertilityCooldown: 200 });
 
     this.#registerCitizen(kingdom);
@@ -151,18 +184,21 @@ export class Simulation {
         const citizen = createCitizen(entityId, x, y, kingdom);
         const role = roles[(entityId + i) % roles.length];
         const temperament = temperaments[(entityId + i + 1) % temperaments.length];
+        const commander = kingdom.kingId ?? null;
         this.ecs.addComponent(entityId, 'Position', { x, y });
         this.ecs.addComponent(entityId, 'Vitals', { energy: citizen.energy, mood: citizen.mood });
         this.ecs.addComponent(entityId, 'Brain', {
           goal: 'wander',
           memory: [`Spawned near ${kingdom.name}`],
           kingdom: kingdom.id,
+          commander,
         });
         this.ecs.addComponent(entityId, 'Identity', {
           name: citizen.name,
           mood: citizen.mood,
           role,
           temperament,
+          rank: 'subject',
         });
         this.ecs.addComponent(entityId, 'Lineage', {
           partnerId: null,
@@ -176,6 +212,8 @@ export class Simulation {
     };
 
     const half = Math.floor(total / this.world.kingdoms.length);
+    this.world.kingdoms.forEach((kingdom) => this.#spawnKing(kingdom));
+
     this.world.kingdoms.forEach((kingdom, index) => {
       const allotment = index === this.world.kingdoms.length - 1 ? total - half : half;
       spawnAroundSeat(kingdom, allotment);
@@ -214,6 +252,7 @@ export class Simulation {
 
     updateAI(this.world, this.ecs, {
       spawnChild: (baby) => this.#spawnChild(baby),
+      onConquest: (payload) => this.#handleConquest(payload),
     });
 
     this.statusListeners.forEach((fn) => fn(`Day ${this.world.time.day} • Temp ${this.world.weather.temperature.toFixed(1)}°C`));
@@ -291,11 +330,51 @@ export class Simulation {
   }
 
   #handleNewDay() {
+    this.#updateKingdomEdicts();
     this.#applyDailyUpkeep();
     const event = drawStoryEvent(this.world, this.ecs);
     if (event) {
       this.addStoryEvent({ title: event.title, description: event.description });
     }
+  }
+
+  #handleConquest({ x, y, attacker, defender }) {
+    const result = claimTile(this.world, x, y, attacker);
+    if (!result) return;
+
+    const attackerName = this.world.kingdoms.find((k) => k.id === attacker)?.name || attacker;
+    const defenderName = this.world.kingdoms.find((k) => k.id === defender)?.name || defender || 'the wilds';
+    this.addStoryEvent({
+      title: 'Border shifts',
+      description: `${attackerName} seize ${x},${y} from ${defenderName}.`,
+    });
+  }
+
+  #updateKingdomEdicts() {
+    const totalTiles = this.world.width * this.world.height;
+    this.world.kingdoms.forEach((kingdom) => {
+      const previous = kingdom.edict;
+      const scarcity = kingdom.stores.food + kingdom.stores.water < Math.max(40, kingdom.population * 6);
+      const risingPower = kingdom.military > kingdom.diplomacy + 2 && kingdom.population > 10;
+      const compactRealm = kingdom.territory / totalTiles < 0.35;
+
+      if (scarcity) {
+        kingdom.edict = 'prosper';
+      } else if (risingPower) {
+        kingdom.edict = 'conquer';
+      } else if (compactRealm) {
+        kingdom.edict = 'expand';
+      } else {
+        kingdom.edict = 'fortify';
+      }
+
+      if (kingdom.edict !== previous) {
+        this.addStoryEvent({
+          title: `${kingdom.name} shifts course`,
+          description: `The king commands the realm to ${kingdom.edict} and rallies their vassals.`,
+        });
+      }
+    });
   }
 
   #applyDailyUpkeep() {

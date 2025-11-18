@@ -1,28 +1,48 @@
 import { clamp } from './utils.js';
 
-const goals = ['wander', 'gather', 'socialize', 'rest', 'explore', 'aid', 'trade', 'court', 'war'];
+const goals = ['wander', 'gather', 'socialize', 'rest', 'explore', 'aid', 'trade', 'court', 'war', 'rally'];
 
-function pickGoal(vitals, identity, weather, lineage) {
+function pickGoal(vitals, identity, weather, lineage, edict, nearKing) {
   if (vitals.energy < 25) return 'rest';
   if (weather.pattern === 'Storm' && vitals.energy < 60) return 'rest';
   if (vitals.mood < 35) return 'socialize';
   if (!lineage.partnerId && vitals.mood > 55 && Math.random() < 0.35) return 'court';
   if (lineage.partnerId && lineage.fertilityCooldown <= 0 && Math.random() < 0.15) return 'court';
 
+  if (!nearKing && Math.random() < 0.12) return 'rally';
+
   const roleBias = {
     scout: 'explore',
     artisan: 'trade',
     mender: 'aid',
     guardian: 'war',
+    king: edict === 'prosper' ? 'socialize' : 'war',
   };
 
   const bias = roleBias[identity.role];
   if (bias && Math.random() < 0.35) return bias;
 
+  const edictBias = {
+    prosper: 'gather',
+    fortify: 'aid',
+    expand: 'explore',
+    conquer: 'war',
+  };
+
+  if (edictBias[edict] && Math.random() < 0.45) return edictBias[edict];
+
   if (identity.temperament === 'curious' && Math.random() < 0.4) return 'explore';
   if (identity.temperament === 'calm' && Math.random() < 0.3) return 'rest';
 
   return goals[Math.floor(Math.random() * goals.length)];
+}
+
+function getKingPosition(world, ecs, kingdomId) {
+  const kingdom = world.kingdoms.find((k) => k.id === kingdomId);
+  if (!kingdom?.kingId) return null;
+  const pos = ecs.getComponent(kingdom.kingId, 'Position');
+  if (!pos) return null;
+  return { ...pos, id: kingdom.kingId };
 }
 
 function moveToward(target, position) {
@@ -51,7 +71,7 @@ function nudgeKingdom(world, kingdomId, delta) {
   const kingdom = world.kingdoms.find((k) => k.id === kingdomId);
   if (!kingdom) return;
   kingdom.wealth = Math.max(0, kingdom.wealth + (delta.wealth || 0));
-  kingdom.territory = Math.max(1, kingdom.territory + (delta.territory || 0));
+  kingdom.territory = Math.max(0, kingdom.territory + (delta.territory || 0));
   kingdom.military = Math.max(0, kingdom.military + (delta.military || 0));
   kingdom.diplomacy = Math.max(0, kingdom.diplomacy + (delta.diplomacy || 0));
   kingdom.influence = clamp(kingdom.influence + (delta.influence || 0), 0, 1);
@@ -71,13 +91,23 @@ export function updateAI(world, ecs, callbacks = {}) {
   for (const bundle of citizens) {
     const { Brain, Position, Vitals, Identity, Lineage, id } = bundle;
     const lineage = Lineage || { partnerId: null, offspring: 0, ageDays: 20, fertilityCooldown: 0 };
+    const kingdom = world.kingdoms.find((k) => k.id === Brain.kingdom);
+    const kingPosition = getKingPosition(world, ecs, Brain.kingdom);
+    const distanceToKing = kingPosition
+      ? Math.max(Math.abs(kingPosition.x - Position.x), Math.abs(kingPosition.y - Position.y))
+      : null;
+    const edict = kingdom?.edict || 'prosper';
 
     Vitals.mood = clamp(Vitals.mood + moodDelta, 0, 100);
     lineage.ageDays += 0.05;
     lineage.fertilityCooldown = Math.max(0, lineage.fertilityCooldown - 1);
 
+    if (distanceToKing !== null && distanceToKing < 2) {
+      Vitals.mood = clamp(Vitals.mood + 0.1, 0, 100);
+    }
+
     if (Math.random() < 0.02) {
-      Brain.goal = pickGoal(Vitals, Identity, world.weather, lineage);
+      Brain.goal = pickGoal(Vitals, Identity, world.weather, lineage, edict, distanceToKing !== null && distanceToKing <= 3);
     }
 
     switch (Brain.goal) {
@@ -214,6 +244,7 @@ export function updateAI(world, ecs, callbacks = {}) {
         break;
       }
       case 'war': {
+        const currentTile = world.tiles[Position.y]?.[Position.x];
         const rival = findNearbyPeer(
           citizens,
           id,
@@ -231,11 +262,31 @@ export function updateAI(world, ecs, callbacks = {}) {
           nudgeKingdom(world, rivalBrain?.kingdom, { military: -0.05, influence: -0.005 });
           Brain.memory.unshift(`Clashed with ${rival.Identity.name}`);
         } else {
+          const nearestEnemy = world.kingdoms.find((k) => k.id !== Brain.kingdom);
+          if (nearestEnemy) {
+            const marched = clampPosition(world, moveToward(nearestEnemy.seat, Position));
+            Position.x = marched.x;
+            Position.y = marched.y;
+            Brain.memory.unshift('Marching toward enemy lines');
+          }
           nudgeKingdom(world, Brain.kingdom, { military: 0.05 });
           Brain.memory.unshift('Drilled for battle');
         }
+        if (currentTile?.controlledBy !== Brain.kingdom) {
+          callbacks.onConquest?.({ x: Position.x, y: Position.y, attacker: Brain.kingdom, defender: currentTile?.controlledBy });
+        }
         Vitals.energy -= 2.2;
         Vitals.mood = clamp(Vitals.mood - 0.6, 0, 100);
+        break;
+      }
+      case 'rally': {
+        const target = kingPosition || kingdom?.seat || Position;
+        const moved = clampPosition(world, moveToward(target, Position));
+        Position.x = moved.x;
+        Position.y = moved.y;
+        Brain.memory.unshift('Answered the king’s summons');
+        Vitals.energy -= 1.1;
+        Vitals.mood = clamp(Vitals.mood + 0.2, 0, 100);
         break;
       }
       default:
